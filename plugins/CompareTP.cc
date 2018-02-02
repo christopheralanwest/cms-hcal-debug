@@ -89,6 +89,7 @@ class CompareTP : public edm::EDAnalyzer {
       edm::InputTag edigis_;
 
       bool swap_iphi_;
+      bool print_swaps_;
 
       int event_;
 
@@ -114,7 +115,8 @@ CompareTP::CompareTP(const edm::ParameterSet& config) :
    edm::EDAnalyzer(),
    digis_(config.getParameter<edm::InputTag>("triggerPrimitives")),
    edigis_(config.getParameter<edm::InputTag>("emulTriggerPrimitives")),
-   swap_iphi_(config.getParameter<bool>("swapIphi"))
+   swap_iphi_(config.getParameter<bool>("swapIphi")),
+   print_swaps_(config.getUntrackedParameter<bool>("printSwaps", false))
 {
    edm::Service<TFileService> fs;
 
@@ -160,6 +162,14 @@ CompareTP::analyze(const edm::Event& event, const edm::EventSetup& setup)
    using namespace edm;
 
    event_ = event.id().event();
+
+   edm::ESHandle<HcalDbService> pSetup;
+   setup.get<HcalDbRecord>().get( pSetup );
+   const HcalElectronicsMap* emap=pSetup->getHcalMapping();
+
+   edm::ESHandle<HcalTrigTowerGeometry> tpd_geo_h;
+   setup.get<CaloGeometryRecord>().get(tpd_geo_h);
+   const HcalTrigTowerGeometry& tpd_geo = *tpd_geo_h;
 
    Handle<HcalTrigPrimDigiCollection> digis;
    if (!event.getByLabel(digis_, digis)) {
@@ -221,11 +231,48 @@ CompareTP::analyze(const edm::Event& event, const edm::EventSetup& setup)
             tp_adc_[i] = 0;
       }
       auto new_id(id);
-      if (swap_iphi_ and id.version() == 1 and id.ieta() > 28 and id.ieta() < 40) {
+      auto new_iphi = id.iphi();
+      if (swap_iphi_  and id.ieta() >= -12 and id.ieta() < 0) {
+	if (id.iphi() % 4 == 1) {
+	  new_iphi = (id.iphi() + 71) % 72;
+	  if(new_iphi == 0) new_iphi = 72;
+	  new_id = HcalTrigTowerDetId(id.ieta(), new_iphi, id.depth(), id.version());
+	}
+         if (id.iphi() % 4 == 2)
+            new_id = HcalTrigTowerDetId(id.ieta(), (id.iphi() + 69) % 72, id.depth(), id.version());
+         if (id.iphi() % 4 == 3)
+            new_id = HcalTrigTowerDetId(id.ieta(), (id.iphi() + 3) % 72, id.depth(), id.version());
+         if (id.iphi() % 4 == 0)
+            new_id = HcalTrigTowerDetId(id.ieta(), (id.iphi() + 1) % 72, id.depth(), id.version());
+      }
+      if (swap_iphi_  and id.ieta() >= -16 and id.ieta() <= -13) {
          if (id.iphi() % 4 == 1)
             new_id = HcalTrigTowerDetId(id.ieta(), (id.iphi() + 70) % 72, id.depth(), id.version());
-         else
-            new_id = HcalTrigTowerDetId(id.ieta(), (id.iphi() + 2) % 72 , id.depth(), id.version());
+         if (id.iphi() % 4 == 2) {
+	   int new_iphi = (id.iphi() + 70) % 72;
+	   if(new_iphi == 0) new_iphi = 72;
+	   new_id = HcalTrigTowerDetId(id.ieta(), new_iphi, id.depth(), id.version());
+	 }
+         if (id.iphi() % 4 == 3)
+            new_id = HcalTrigTowerDetId(id.ieta(), (id.iphi() + 2) % 72, id.depth(), id.version());
+         if (id.iphi() % 4 == 0)
+            new_id = HcalTrigTowerDetId(id.ieta(), (id.iphi() + 2) % 72, id.depth(), id.version());
+      }
+      if(print_swaps_ && id != new_id) {
+	std::vector<HcalDetId> oldChannelIds = tpd_geo.detIds(id);
+	std::vector<HcalDetId> newChannelIds = tpd_geo.detIds(new_id);
+	for(unsigned int i=0; i<oldChannelIds.size(); i++) {
+	  HcalSubdetector subdet = oldChannelIds.at(i).subdet();
+	  if(subdet != HcalBarrel && subdet!=HcalEndcap) continue;
+	  int ieta = oldChannelIds.at(i).ieta();
+	  if(ieta <0 && ieta >= -16) {
+	    if(ieta <=-13) std::cout << "mixed: ";
+	    else std::cout << "pure: ";
+	    std::cout << emap->lookup(oldChannelIds.at(i)).fiberIndex()
+		      << " <--> "
+		      << emap->lookup(newChannelIds.at(i)).fiberIndex() << std::endl;
+	  }
+	}
       }
       if ((digi = eds.find(new_id)) != eds.end()) {
          tp_soi_emul_ = digi->second.SOI_compressedEt();
